@@ -1,0 +1,22 @@
+# never commit: Panasonic's copyrighted library (redistribution would infringe)
+*.so
+*.apk
+data/
+
+# never commit: packet captures (network topology, MACs, session keys)
+*.pcap
+*.pcapng
+
+# build / runtime junk
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+*.bak-*
+.DS_Store
+
+# built app bundles and frozen binaries
+*.app/
+panasonic-mirror-*
