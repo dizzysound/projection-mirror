@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.5
+- **PJLink power is a state machine, not a boolean.** Starting a mirror while a projector was
+  cooling down mirrored to a projector that stayed switched off. Cooling reports `%1POWR=2`,
+  refuses `%1POWR 1` with `ERR3` ("unavailable time", spec v1.04 s4.1), and then settles at
+  `0` STANDBY — never at `1`. `power_on_network()` fired one power-on into that `ERR3` window,
+  discarded the error, then waited 100 s for a `1` that cannot arrive and gave up silently
+  (measured: 132 s, projector still off). It now waits each transition out, powers on from
+  standby, bounds the whole wait, and returns success so `_connect_with_retry` can say when the
+  projector never came up.
+- **PJLink responses are read as whole CR-terminated lines.** Both `pjlink()` and `pjctl.send()`
+  took whatever one `recv()` returned. A greeting split across TCP segments yielded a truncated
+  auth seed, so the MD5 digest was wrong and the command went out unauthenticated — reproduced:
+  the client read one byte of `PJLINK 1 <seed>` and sent no digest at all. Sockets now close on
+  every path, including the error path, which also closes an fd leak in both.
+- **`pjctl` explains PJLink error codes** instead of printing a bare `%1POWR=ERR3`, and skips a
+  power command during cooling/warm-up with a note saying why, rather than firing one that the
+  projector is required to reject.
+- Offline suite grown by 5 PJLink checks covering the cooling path, standby power-on, and
+  segmented-greeting authentication. They run against a mock projector on loopback — no hardware.
+
+
 ## v2.4
 - **GUI unified onto `MirrorSession`.** `pm_app.py` no longer carries its own copy of the
   producer loop and per-projector sender (was ~212 duplicated lines). `_mirror()` now drives the

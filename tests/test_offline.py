@@ -117,6 +117,99 @@ print("\n-- PJLink helpers --")
 check("MUTE_ON codes", fm.MUTE_ON == ("11", "21", "31"))
 check("pj_get tolerates an unreachable host", fm.pj_get("192.0.2.1", "%1POWR ?") is None)
 
+# ---- PJLink power state machine -------------------------------------------------
+# v2.4 mirrored to a projector that was still switched off whenever a start
+# followed a power-off: cooling reports '2', refuses %1POWR 1 with ERR3, and then
+# settles at '0' STANDBY -- never at '1'. The old wait polled 100s for a '1' that
+# cannot arrive. These run against a mock projector on a loopback port.
+import socket as _sock, threading as _thr, hashlib as _md5
+
+class _MockPJ:
+    """PJLink Class 1 power state machine, per spec v1.04 s4.1/s4.2."""
+    def __init__(self, power="2", cool_polls=3, warm_polls=2, dribble=False, seed=None):
+        self.power, self.cool_polls, self.warm_polls = power, cool_polls, warm_polls
+        self.dribble, self.seed = dribble, seed
+        self.log, self.n, self.digests = [], 0, []
+    def _reply(self, line):
+        if self.seed and len(line) > 32 and not line.startswith("%"):
+            self.digests.append(line[:32]); line = line[32:]
+        self.log.append(line)
+        cmd, _, arg = line.partition(" "); cmd = cmd.upper()
+        if cmd == "%1POWR":
+            if arg == "?":
+                self.n += 1
+                if self.power == "2" and self.n > self.cool_polls: self.power = "0"
+                elif self.power == "3" and self.n > self.cool_polls + self.warm_polls: self.power = "1"
+                return "%1POWR=" + self.power
+            if self.power in ("2", "3"): return "%1POWR=ERR3"
+            if arg == "1": self.power = "3"; self.n = self.cool_polls; return "%1POWR=OK"
+            self.power = "0"; return "%1POWR=OK"
+        if cmd == "%1INPT": return "%1INPT=OK" if self.power == "1" else "%1INPT=ERR3"
+        return cmd + "=ERR1"
+
+def _serve(proj, port):
+    srv = _sock.socket(); srv.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port)); srv.listen(16)
+    def conn(c):
+        try:
+            g = (("PJLINK 1 %s\r" % proj.seed) if proj.seed else "PJLINK 0\r").encode()
+            if proj.dribble:
+                for b in g: c.sendall(bytes([b])); time.sleep(0.002)
+            else: c.sendall(g)
+            buf = b""
+            while b"\r" not in buf:
+                ch = c.recv(256)
+                if not ch: return
+                buf += ch
+            c.sendall((proj._reply(buf.split(b"\r")[0].decode("ascii", "replace")) + "\r").encode())
+        except Exception: pass
+        finally:
+            try: c.close()
+            except Exception: pass
+    def loop():
+        while True:
+            try: c, _ = srv.accept()
+            except OSError: return
+            _thr.Thread(target=conn, args=(c,), daemon=True).start()
+    _thr.Thread(target=loop, daemon=True).start()
+    return srv
+
+class _VClock:
+    """Virtual clock so a 240s timeout costs no wall time."""
+    def __init__(self): self.t = 0.0
+    def sleep(self, s): self.t += s
+    def monotonic(self): return self.t
+
+_srv = _serve(_MockPJ(power="2"), 4352)
+_real_time, _clk = fm.time, _VClock()
+fm.time = _clk
+try:
+    _ok = fm.power_on_network("127.0.0.1", log=lambda m: None)
+finally:
+    fm.time = _real_time; _srv.close()
+check("power_on_network waits out COOLING and powers on", _ok is True)
+check("power_on_network does not burn the full timeout while cooling", _clk.t < 120, "%.0fs" % _clk.t)
+
+_proj = _MockPJ(power="1", dribble=True, seed="498e4a67")
+_srv = _serve(_proj, 4352)
+try:
+    _r = fm.pjlink("127.0.0.1", "%1POWR ?")
+finally:
+    _srv.close()
+_want = _md5.md5(("498e4a67" + fm.PJLINK_PW).encode()).hexdigest()
+check("auth digest survives a greeting split across TCP segments",
+      _proj.digests and _proj.digests[0] == _want, _proj.digests)
+check("response is read as a whole line, not a partial recv", _r == "%1POWR=1", _r)
+
+_srv = _serve(_MockPJ(power="0"), 4352)
+_real_time, _clk = fm.time, _VClock()
+fm.time = _clk
+try:
+    _ok0 = fm.power_on_network("127.0.0.1", log=lambda m: None)
+finally:
+    fm.time = _real_time; _srv.close()
+check("power_on_network powers on from STANDBY", _ok0 is True)
+
 print("\n-- browser control URLs (WM's 'Remote control' is just this CGI) --")
 check("WEB control url", fm.web_url("192.168.1.100") == "http://192.168.1.100/")
 check("remote url matches the WM format string",

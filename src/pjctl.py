@@ -30,22 +30,49 @@ INPUTS = {                      # friendly name -> PJLink code
 INPUT_NAMES = {"11":"RGB1","12":"RGB2","21":"VIDEO1","22":"VIDEO2","31":"DIGITAL1","51":"NETWORK"}
 POWER = {"0":"OFF","1":"ON","2":"COOLING","3":"WARMING"}
 
+# PJLink response codes (spec v1.04 s2.3/s2.4), rendered for a human.
+ERRORS = {
+    "ERR1": "projector does not support that command",
+    "ERR2": "out of parameter (value not valid for this projector)",
+    "ERR3": "unavailable right now - the projector is warming up, cooling down, or in standby",
+    "ERR4": "projector reports a hardware failure",
+}
+
+def explain(r):
+    """Append a plain-English gloss to a raw PJLink response."""
+    code = r.rsplit("=", 1)[-1].strip().upper() if "=" in r else ""
+    return f"{r}  ({ERRORS[code]})" if code in ERRORS else r
+
+def _readline(s, limit=512):
+    """One CR-terminated line. A single recv() can return a partial line, which
+    for the greeting means a truncated auth seed and a wrong MD5 digest."""
+    buf=b""
+    while b"\r" not in buf:
+        if len(buf)>=limit: break
+        chunk=s.recv(limit-len(buf))
+        if not chunk: break
+        buf+=chunk
+    return buf.split(b"\r")[0].decode(errors="replace").strip()
+
 def send(ip, cmd, pw=PASSWORD, retries=2):
     last=None
     for _ in range(retries+1):
+        s=None
         try:
             s=socket.socket(); s.settimeout(5); s.connect((ip,4352))
-            hello=s.recv(64).decode(errors="replace").strip().split(" ")
+            hello=_readline(s).split(" ")
             if len(hello)>=3 and hello[1]=="1":
                 msg=hashlib.md5((hello[2]+pw).encode()).hexdigest()+cmd+"\r"
             else:
                 msg=cmd+"\r"
             s.sendall(msg.encode())
-            r=s.recv(256).decode(errors="replace").strip()
-            s.close()
-            return r
+            return _readline(s)
         except Exception as e:
             last=e; time.sleep(1.5)
+        finally:
+            if s is not None:
+                try: s.close()
+                except Exception: pass
     return f"ERR {last}"
 
 def targets(which):
@@ -67,18 +94,25 @@ def cmd_status():
 
 def cmd_power(which,on):
     for name,ip in targets(which):
+        st=send(ip,"%1POWR ?").rsplit("=",1)[-1].strip()
+        if st in ("2","3"):
+            # A power command during either transition is answered ERR3 and does
+            # nothing (spec v1.04 s4.1). Say so rather than firing it blindly.
+            print(f"{name} power {'ON' if on else 'OFF'}: skipped - projector is "
+                  f"{POWER.get(st,st)}; it accepts power commands once that finishes")
+            time.sleep(1.2); continue
         r=send(ip,"%1POWR "+("1" if on else "0"))
-        print(f"{name} power {'ON' if on else 'OFF'}: {r}"); time.sleep(1.2)
+        print(f"{name} power {'ON' if on else 'OFF'}: {explain(r)}"); time.sleep(1.2)
 
 def cmd_input(which,code):
     for name,ip in targets(which):
         r=send(ip,"%1INPT "+code)
-        print(f"{name} input {INPUT_NAMES.get(code,code)}: {r}"); time.sleep(1.2)
+        print(f"{name} input {INPUT_NAMES.get(code,code)}: {explain(r)}"); time.sleep(1.2)
 
 def cmd_mute(which,on):
     for name,ip in targets(which):
         r=send(ip,"%1AVMT "+("31" if on else "30"))
-        print(f"{name} mute {'ON' if on else 'OFF'}: {r}"); time.sleep(1.2)
+        print(f"{name} mute {'ON' if on else 'OFF'}: {explain(r)}"); time.sleep(1.2)
 
 def usage(): print(__doc__); sys.exit(1)
 

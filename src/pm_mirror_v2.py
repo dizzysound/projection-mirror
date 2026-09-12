@@ -41,21 +41,78 @@ def bswap32(b): return b"".join(b[i:i+4][::-1] for i in range(0,len(b),4))
 def make_pkt500(pkey):
     return b"500043001"+AES.new(pkey,AES.MODE_ECB).encrypt(bswap32(pkey))
 
-def pjlink(ip, cmd):
-    s=socket.socket(); s.settimeout(6); s.connect((ip,4352))
-    h=s.recv(64).decode("ascii","replace").strip().split(" ")
-    m=(hashlib.md5((h[2]+PJLINK_PW).encode()).hexdigest()+cmd+"\r") if len(h)>=3 and h[1]=="1" else cmd+"\r"
-    s.sendall(m.encode()); r=s.recv(256).decode("ascii","replace").strip(); s.close(); return r
+def _pj_readline(s, limit=512):
+    """One CR-terminated PJLink line. TCP has no message boundaries, so a single
+    recv() can return half a line or two lines at once; the greeting seed in
+    particular must not be read short or the MD5 digest comes out wrong."""
+    buf = b""
+    while b"\r" not in buf:
+        if len(buf) >= limit: break
+        chunk = s.recv(limit - len(buf))
+        if not chunk: break
+        buf += chunk
+    return buf.split(b"\r")[0].decode("ascii", "replace").strip()
 
-def power_on_network(ip):
-    if not pjlink(ip,"%1POWR ?").endswith("=1"):
-        pjlink(ip,"%1POWR 1")
-        for _ in range(25):
-            time.sleep(4)
-            if pjlink(ip,"%1POWR ?").endswith("=1"): break
-    for _ in range(8):
-        if pjlink(ip,"%1INPT 51").endswith("=OK"): break
+def pjlink(ip, cmd):
+    s=socket.socket(); s.settimeout(6)
+    try:
+        s.connect((ip,4352))
+        h=_pj_readline(s).split(" ")
+        m=(hashlib.md5((h[2]+PJLINK_PW).encode()).hexdigest()+cmd+"\r") if len(h)>=3 and h[1]=="1" else cmd+"\r"
+        s.sendall(m.encode())
+        return _pj_readline(s)
+    finally:
+        try: s.close()
+        except Exception: pass
+
+# PJLink %1POWR states (spec v1.04 s4.2). The two transition states are the whole
+# reason this is a state machine and not a boolean: a power command sent during
+# either one is answered ERR3 "unavailable time" (s4.1) and does nothing.
+PJ_STANDBY, PJ_ON, PJ_COOLING, PJ_WARMUP = "0", "1", "2", "3"
+
+def pj_power_state(ip):
+    """'0' standby / '1' on / '2' cooling / '3' warming, or None if unreachable."""
+    return pj_get(ip, "%1POWR ?")
+
+def power_on_network(ip, timeout=240, log=None):
+    """Bring the projector up and onto the NETWORK input. Returns True on success.
+
+    Cooling is the case that used to break this. A projector that is cooling
+    reports '2' and refuses %1POWR 1 with ERR3; when it finishes it settles at
+    '0' STANDBY, never at '1'. The old code issued one power-on into the ERR3
+    window, discarded the error, then waited 100s for a '1' that cannot arrive
+    and mirrored to a projector that was still switched off. Wait the cooling
+    out, then power on from standby."""
+    say = log or (lambda m: print("[%s] %s" % (ip, m)))
+    deadline = time.monotonic() + timeout
+    announced = set()
+    while time.monotonic() < deadline:
+        st = pj_power_state(ip)
+        if st is None:
+            time.sleep(4); continue
+        if st == PJ_ON:
+            break
+        if st in (PJ_COOLING, PJ_WARMUP):
+            if st not in announced:
+                announced.add(st)
+                say("projector is %s; waiting for it to settle before powering on"
+                    % ("cooling down" if st == PJ_COOLING else "warming up"))
+            time.sleep(4); continue
+        # standby: safe to power on now
+        r = pjlink(ip, "%1POWR 1")
+        if r.upper().endswith("ERR3"):
+            time.sleep(4); continue          # raced a transition; re-read and wait
         time.sleep(4)
+    else:
+        say("timed out after %ds waiting for power on (last state %r)" % (timeout, pj_power_state(ip)))
+        return False
+
+    while time.monotonic() < deadline:
+        if pjlink(ip, "%1INPT 51").endswith("=OK"):
+            return True
+        time.sleep(4)
+    say("powered on but could not select the NETWORK input within %ds" % timeout)
+    return False
 
 def pj_blank(ip):
     """PJLink AV-mute ON: hardware-blank the panel (survives WM session teardown)."""
@@ -740,7 +797,8 @@ def _safe_send_strips(x, scans, idxs):
     except Exception as e: print(f"[{x.ip}] send error: {e}")
 
 def _connect_with_retry(ip, tries=6):
-    power_on_network(ip)
+    if not power_on_network(ip):
+        print(f"[{ip}] projector did not reach the NETWORK input; connecting anyway")
     s=Sender(ip)
     for a in range(tries):
         try: s.connect(); return s
