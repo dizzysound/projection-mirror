@@ -1,0 +1,50 @@
+Projection Mirror — Notice and Disclaimer
+==============================================
+
+Independent and unofficial
+--------------------------
+This is an independent, unofficial interoperability project. It is NOT affiliated
+with, sponsored by, authorized by, or endorsed by Panasonic Corporation or any of
+its affiliates. No relationship or endorsement is implied.
+
+Purpose
+-------
+The software mirrors a Mac display to Panasonic PT-F300-family network projectors so
+that hardware the owner already possesses can continue to be used after the vendor's
+display software (Wireless Manager ME 6.4) was discontinued and ceased to run on
+current versions of macOS. The projectors' network display protocol was reverse
+engineered solely to achieve this interoperability.
+
+No vendor code or materials
+---------------------------
+This repository contains ONLY original, independently written code. It does not
+include, redistribute, or derive its text from:
+  - any Panasonic software, application, installer, or firmware;
+  - any Panasonic library or binary (native or otherwise);
+  - any decompiled, disassembled, or extracted vendor source;
+  - any packet captures or other proprietary data.
+
+The key-derivation routine in src/pm_pkey.py is an independent reimplementation of
+a functional algorithm, written from protocol analysis. Functional protocols,
+interfaces, and algorithms are not themselves the expressive, copyrightable elements
+of a program; this project implements such functional elements in original code.
+
+Trademarks
+----------
+"Panasonic", "PT-F300U", "PT-F300NT", "PT-FW300NT", "Wireless Manager", and related
+names and marks are trademarks or registered trademarks of their respective owners.
+They are used in this project only nominatively — that is, to identify the specific
+hardware the software is compatible with. No claim is made to any such mark.
+
+User responsibility
+-------------------
+You are responsible for ensuring that your use of this software complies with any
+agreements, licenses, or laws that govern your own equipment, software, and network.
+Nothing here is legal advice.
+
+No warranty
+-----------
+This software is provided "AS IS", without warranty of any kind, express or implied.
+The authors are not liable for any damage to equipment, data, or otherwise arising
+from its use. Operating projector hardware over a network carries risk; see
+docs/OPERATIONS.md and docs/FINDINGS.md before use.
